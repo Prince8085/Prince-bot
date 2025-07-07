@@ -7,19 +7,49 @@ import 'package:permission_handler/permission_handler.dart';
 
 void main() async {
   await dotenv.load();
-  runApp(const TestApp());
+  runApp(const AskPrinceApp());
 }
 
+// Removed print statement from TestApp build method
 class TestApp extends StatelessWidget {
   const TestApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    print('Building TestApp UI');
+    // Removed print statement for production
     return MaterialApp(
       home: Scaffold(
         appBar: AppBar(title: const Text('Test UI')),
-        body: const Center(child: Text('Hello, this is a test UI to check rendering.')),
+        body: const Center(
+            child: Text('Hello, this is a test UI to check rendering.')),
+      ),
+    );
+  }
+}
+
+// Updated InterviewHistoryScreen to accept List<Map<String, String>> and display question-answer pairs
+class InterviewHistoryScreen extends StatelessWidget {
+  final List<Map<String, String>> history;
+
+  const InterviewHistoryScreen({super.key, required this.history});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Interview History'),
+      ),
+      body: ListView.builder(
+        itemCount: history.length,
+        itemBuilder: (context, index) {
+          final entry = history[index];
+          final question = entry['question'] ?? '';
+          final answer = entry['answer'] ?? '';
+          return ListTile(
+            title: Text('Q: $question'),
+            subtitle: Text('A: $answer'),
+          );
+        },
       ),
     );
   }
@@ -39,19 +69,55 @@ class AskPrinceApp extends StatelessWidget {
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.amber[700],
             foregroundColor: Colors.black,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            elevation: 10,
-            shadowColor: Colors.amberAccent,
           ),
         ),
-        textTheme: const TextTheme(
-          bodyLarge: TextStyle(color: Colors.white, fontSize: 16),
-          bodyMedium: TextStyle(color: Colors.white70, fontSize: 14),
+      ),
+      home: const WelcomeScreen(),
+    );
+  }
+}
+
+class WelcomeScreen extends StatelessWidget {
+  const WelcomeScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Welcome to Ask Prince'),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Welcome to Ask Prince – Your AI Interview Assistant! 🎤🤖',
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'This app helps you practice interview questions using voice or text input.\n\nPlease grant microphone permission when prompted to use voice features.',
+              style: TextStyle(fontSize: 16),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 40),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const AskPrinceHomePage(),
+                  ),
+                );
+              },
+              child: const Text('Get Started'),
+            ),
+          ],
         ),
       ),
-      home: const AskPrinceHomePage(),
     );
   }
 }
@@ -66,10 +132,18 @@ class AskPrinceHomePage extends StatefulWidget {
 class _AskPrinceHomePageState extends State<AskPrinceHomePage> {
   late stt.SpeechToText _speech;
   bool _isListening = false;
+  bool _isVoiceResponseEnabled = true;
   String _transcribedText = '';
   final TextEditingController _textController = TextEditingController();
   String _answer = '';
   bool _isLoading = false;
+
+  bool _isInterviewActive = false;
+  final ScrollController _scrollController = ScrollController();
+
+  final List<Map<String, String>> _history = [];
+
+  String? _lastSentQuestion;
 
   // Added a function to handle streaming chat completions from Groq API
   Future<void> fetchGroqChatCompletionStream(
@@ -184,56 +258,124 @@ Always speak as Prince — humble, smart, and focused on results. Avoid jargon u
     _speech = stt.SpeechToText();
   }
 
-  Future<void> _startListening() async {
-    // Request microphone permission at runtime
-    var status = await Permission.microphone.status;
-    if (!status.isGranted) {
-      status = await Permission.microphone.request();
-      if (!status.isGranted) {
-        // Permission denied, show a message or handle accordingly
-        setState(() {
-          _answer = 'Microphone permission is required to use this feature.';
-        });
-        return;
-      }
-    }
+  @override
+  void dispose() {
+    super.dispose();
+  }
 
-    bool available = await _speech.initialize(
-      onStatus: (val) {
-        if (val == 'done' || val == 'notListening') {
+  Future<void> _startListening() async {
+    try {
+      var status = await Permission.microphone.status;
+      if (!status.isGranted) {
+        status = await Permission.microphone.request();
+        if (!status.isGranted) {
           setState(() {
+            _transcribedText = 'Microphone permission denied';
+          });
+          _showError('Microphone permission denied.');
+          return;
+        }
+      }
+
+      bool available = await _speech.initialize(
+        onStatus: (status) async {
+          if (status == 'done' || status == 'notListening') {
+            setState(() {
+              _isListening = false;
+            });
+            if (_isInterviewActive) {
+              // Restart listening automatically during interview
+              await Future.delayed(const Duration(milliseconds: 200));
+              await _startListening();
+            }
+          }
+        },
+        onError: (errorNotification) {
+          setState(() {
+            _transcribedText = 'Error: ${errorNotification.errorMsg}';
             _isListening = false;
           });
-          if (_transcribedText.isNotEmpty) {
-            _sendQuestion(_transcribedText);
-          }
-        }
-      },
-      onError: (val) {
-        setState(() {
-          _isListening = false;
-        });
-      },
-    );
-    if (available) {
-      setState(() {
-        _isListening = true;
-        _transcribedText = '';
-      });
-      _speech.listen(
-        onResult: (val) {
-          setState(() {
-            _transcribedText = val.recognizedWords;
-          });
+          _showError('Speech recognition error: ${errorNotification.errorMsg}');
         },
       );
+
+      if (available) {
+        setState(() {
+          _isListening = true;
+          _transcribedText = '';
+          _lastSentQuestion = null;
+        });
+        _speech.listen(
+          onResult: (result) async {
+            String recognized = result.recognizedWords.trim();
+            setState(() {
+              _transcribedText = recognized;
+            });
+
+            // Improved question detection
+            bool isQuestion = false;
+            final lower = recognized.toLowerCase();
+            final questionWords = [
+              'what',
+              'how',
+              'why',
+              'when',
+              'where',
+              'who',
+              'which',
+              'do',
+              'does',
+              'is',
+              'are',
+              'can',
+              'could',
+              'would',
+              'should'
+            ];
+
+            if (recognized.endsWith('?')) {
+              isQuestion = true;
+            } else {
+              for (var word in questionWords) {
+                if (lower.startsWith('$word ')) {
+                  isQuestion = true;
+                  break;
+                }
+              }
+            }
+
+            if (isQuestion && recognized != _lastSentQuestion) {
+              _lastSentQuestion = recognized;
+              await _sendQuestion(_lastSentQuestion!);
+              setState(() {
+                _transcribedText = '';
+              });
+            }
+          },
+          listenFor: const Duration(seconds: 60),
+          pauseFor: const Duration(seconds: 3),
+          listenOptions: stt.SpeechListenOptions(
+            partialResults: true,
+            cancelOnError: true,
+            listenMode: stt.ListenMode.confirmation,
+          ),
+        );
+      } else {
+        setState(() {
+          _transcribedText = 'Speech recognition not available';
+          _isListening = false;
+        });
+        _showError('Speech recognition not available.');
+      }
+    } catch (e) {
+      _showError(
+          'Failed to start listening. Please check microphone permissions.');
     }
   }
 
   Future<void> _sendQuestion(String question) async {
     setState(() {
       _isLoading = true;
-      _answer = '';
     });
 
     final url = Uri.parse('https://api.groq.com/openai/v1/chat/completions');
@@ -262,22 +404,27 @@ Always speak as Prince — humble, smart, and focused on results. Avoid jargon u
           final answer = choices[0]['message']['content'];
           setState(() {
             _answer = answer;
+            _history.insert(0, {'question': question, 'answer': answer});
           });
         } else {
           setState(() {
             _answer = 'No answer received from API.';
           });
+          _showError('No answer received from API.');
         }
       } else {
         setState(() {
           _answer =
               'Failed to fetch answer. Status code: ${response.statusCode}';
         });
+        _showError(
+            'Failed to fetch answer. Status code: ${response.statusCode}');
       }
     } catch (e) {
       setState(() {
         _answer = 'Error occurred: $e';
       });
+      _showError('Failed to get answer. Please try again.');
     } finally {
       setState(() {
         _isLoading = false;
@@ -290,7 +437,62 @@ Always speak as Prince — humble, smart, and focused on results. Avoid jargon u
       _transcribedText = '';
       _textController.clear();
       _answer = '';
+      _history.clear();
     });
+  }
+
+  void _stopListening() {
+    _speech.stop();
+    setState(() {
+      _isListening = false;
+    });
+  }
+
+  void _startInterview() async {
+    setState(() {
+      _isInterviewActive = true;
+      _history.clear();
+      _transcribedText = '';
+      _answer = '';
+    });
+    await _startListening();
+  }
+
+  void _stopInterview() {
+    _stopListening();
+    setState(() {
+      _isInterviewActive = false;
+    });
+  }
+
+  void _sendTranscribedQuestion() async {
+    if (_transcribedText.trim().isEmpty) return;
+    String question = _transcribedText.trim();
+    setState(() {
+      _transcribedText = '';
+      _isLoading = true;
+    });
+    await _sendQuestion(question);
+    setState(() {
+      _isLoading = false;
+    });
+    // Scroll to bottom to show latest answer
+    await Future.delayed(const Duration(milliseconds: 300));
+    if (_scrollController.hasClients) {
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    }
+  }
+
+  Widget _buildMicIcon() {
+    return Icon(
+      _isListening ? Icons.mic : Icons.mic_none,
+      color: _isListening ? Colors.red : Colors.grey,
+      size: 32,
+    );
   }
 
   @override
@@ -306,142 +508,296 @@ Always speak as Prince — humble, smart, and focused on results. Avoid jargon u
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Section 1: Mic Icon
-            Center(
-              child: GestureDetector(
-                onTap: _isListening ? null : _startListening,
-                child: Container(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color:
-                        _isListening ? Colors.amberAccent : Colors.amber[700],
-                    boxShadow: _isListening
-                        ? [
-                            BoxShadow(
-                              // ignore: deprecated_member_use
-                              color: Colors.amberAccent.withOpacity(0.7),
-                              blurRadius: 20,
-                              spreadRadius: 5,
+            if (_isInterviewActive) ...[
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ElevatedButton.icon(
+                    icon: _buildMicIcon(),
+                    label: const Text('Start Interview'),
+                    onPressed: _isInterviewActive || _isLoading
+                        ? null
+                        : _startInterview,
+                  ),
+                  const SizedBox(width: 20),
+                  ElevatedButton(
+                    onPressed: _isInterviewActive && !_isLoading
+                        ? _stopInterview
+                        : null,
+                    child: const Text('Stop Interview'),
+                  ),
+                  const SizedBox(width: 20),
+                  ElevatedButton(
+                    onPressed: _isInterviewActive &&
+                            !_isLoading &&
+                            _transcribedText.trim().isNotEmpty
+                        ? _sendTranscribedQuestion
+                        : null,
+                    child: _isLoading
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
                             ),
-                          ]
-                        : [],
+                          )
+                        : const Text('Send Question'),
                   ),
-                  padding: const EdgeInsets.all(20),
-                  child: Icon(
-                    _isListening ? Icons.mic : Icons.mic_none,
-                    size: 48,
-                    color: Colors.black,
+                  const SizedBox(width: 20),
+                  ElevatedButton(
+                    onPressed:
+                        _history.isNotEmpty && !_isLoading ? _clear : null,
+                    child: const Text('Clear History'),
                   ),
-                ),
+                ],
               ),
-            ),
-            const SizedBox(height: 16),
-
-            // Section 2: Text input field
-            TextField(
-              controller: _textController,
-              style: const TextStyle(color: Colors.white),
-              decoration: InputDecoration(
-                filled: true,
-                fillColor: Colors.grey[900],
-                hintText: 'Type your question here...',
-                hintStyle: const TextStyle(color: Colors.white54),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
-                ),
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.send, color: Colors.amber),
-                  onPressed: () {
-                    final question = _textController.text.trim();
-                    if (question.isNotEmpty) {
-                      _sendQuestion(question);
+              const SizedBox(height: 12),
+              Expanded(
+                child: ListView.builder(
+                  controller: _scrollController,
+                  itemCount: _history.length + 1,
+                  itemBuilder: (context, index) {
+                    if (index == _history.length) {
+                      return Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: Text(
+                          _transcribedText.isEmpty
+                              ? 'Listening...'
+                              : _transcribedText,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontStyle: FontStyle.italic,
+                            color: Colors.grey[700],
+                          ),
+                        ),
+                      );
                     }
+                    final item = _history[index];
+                    return ListTile(
+                      title: Text('Q: ${item['question'] ?? ''}'),
+                      subtitle: Text('A: ${item['answer'] ?? ''}'),
+                    );
                   },
                 ),
               ),
-              onSubmitted: (value) {
-                final question = value.trim();
-                if (question.isNotEmpty) {
-                  _sendQuestion(question);
-                }
-              },
-            ),
-            const SizedBox(height: 16),
-
-            // Section 3: Pre-defined questions list
-            Expanded(
-              child: ListView.builder(
-                itemCount: _preloadedQuestions.length,
-                itemBuilder: (context, index) {
-                  final question = _preloadedQuestions[index];
-                  return Card(
-                    color: Colors.grey[900],
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+            ] else ...[
+              // Section 1: Mic Icon
+              Center(
+                child: GestureDetector(
+                  onTap: _isListening || _isLoading ? null : _startListening,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color:
+                          _isListening ? Colors.amberAccent : Colors.amber[700],
+                      boxShadow: _isListening
+                          ? [
+                              BoxShadow(
+                                  color: Colors.amberAccent.withAlpha(179),
+                                  blurRadius: 20,
+                                  spreadRadius: 5)
+                            ]
+                          : [],
                     ),
-                    child: ListTile(
-                      title: Text(
-                        question,
-                        style: const TextStyle(color: Colors.amber),
-                      ),
-                      onTap: () {
-                        _sendQuestion(question);
+                    padding: const EdgeInsets.all(20),
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 300),
+                      transitionBuilder:
+                          (Widget child, Animation<double> animation) {
+                        return ScaleTransition(scale: animation, child: child);
                       },
-                    ),
-                  );
-                },
-              ),
-            ),
-
-            // Section 4: Answer Display
-            Container(
-              height: 150,
-              margin: const EdgeInsets.only(top: 16),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.grey[900],
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: _isLoading
-                  ? const Center(
-                      child: CircularProgressIndicator(color: Colors.amber),
-                    )
-                  : SingleChildScrollView(
-                      child: Text(
-                        _answer.isEmpty
-                            ? 'Your answer will appear here.'
-                            : _answer,
-                        style: const TextStyle(color: Colors.white),
+                      child: Icon(
+                        key: ValueKey<bool>(_isListening),
+                        _isListening ? Icons.mic : Icons.mic_none,
+                        size: 48,
+                        color: Colors.black,
                       ),
                     ),
-            ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
 
-            const SizedBox(height: 16),
+              // Section 2: Text input field
+              TextField(
+                controller: _textController,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: Colors.grey[900],
+                  hintText: 'Type your question here...',
+                  hintStyle: const TextStyle(color: Colors.white54),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.send, color: Colors.amber),
+                    onPressed: _isLoading
+                        ? null
+                        : () {
+                            final question = _textController.text.trim();
+                            if (question.isNotEmpty) {
+                              _sendQuestion(question);
+                            }
+                          },
+                  ),
+                ),
+                onSubmitted: _isLoading
+                    ? null
+                    : (value) {
+                        final question = value.trim();
+                        if (question.isNotEmpty) {
+                          _sendQuestion(question);
+                        }
+                      },
+              ),
 
-            // Buttons Row
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                ElevatedButton(
-                  onPressed: () {
-                    final question = _textController.text.trim();
-                    if (question.isNotEmpty) {
-                      _sendQuestion(question);
-                    }
+              const SizedBox(height: 8),
+
+              // Voice Response Toggle
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text(
+                    'Voice Response',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  Switch(
+                    value: _isVoiceResponseEnabled,
+                    activeColor: Colors.amber[700],
+                    onChanged: _isLoading
+                        ? null
+                        : (bool value) {
+                            setState(() {
+                              _isVoiceResponseEnabled = value;
+                            });
+                          },
+                  ),
+                ],
+              ),
+
+              const SizedBox(height: 8),
+
+              // Section 3: Pre-defined questions list
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _preloadedQuestions.length,
+                  itemBuilder: (context, index) {
+                    final question = _preloadedQuestions[index];
+                    return Card(
+                      color: Colors.grey[900],
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: ListTile(
+                        title: Text(
+                          question,
+                          style: const TextStyle(color: Colors.amber),
+                        ),
+                        onTap:
+                            _isLoading ? null : () => _sendQuestion(question),
+                      ),
+                    );
                   },
-                  child: const Text('Ask Question'),
                 ),
-                ElevatedButton(
-                  onPressed: _isListening ? null : _startListening,
-                  child: const Text('Start Listening'),
+              ),
+
+              // Section 4: Answer Display
+              Container(
+                height: 150,
+                margin: const EdgeInsets.only(top: 16),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey[900],
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                ElevatedButton(onPressed: _clear, child: const Text('Clear')),
-              ],
-            ),
+                child: _isLoading
+                    ? const Center(
+                        child: CircularProgressIndicator(color: Colors.amber),
+                      )
+                    : SingleChildScrollView(
+                        child: Text(
+                          _answer.isEmpty
+                              ? 'Your answer will appear here.'
+                              : _answer,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // Buttons Row
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  ElevatedButton(
+                    onPressed: _isLoading
+                        ? null
+                        : () {
+                            final question = _textController.text.trim();
+                            if (question.isNotEmpty) {
+                              _sendQuestion(question);
+                            }
+                          },
+                    child: _isLoading
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Text('Ask Question'),
+                  ),
+                  ElevatedButton(
+                    onPressed:
+                        _isListening || _isLoading ? null : _startListening,
+                    child: _isLoading
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Text('Start Listening'),
+                  ),
+                  ElevatedButton(
+                    onPressed: _isLoading
+                        ? null
+                        : () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) =>
+                                    InterviewHistoryScreen(history: _history),
+                              ),
+                            );
+                          },
+                    child: const Text('View History'),
+                  ),
+                  ElevatedButton(
+                    onPressed:
+                        _history.isNotEmpty && !_isLoading ? _clear : null,
+                    child: const Text('Clear History'),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
       ),
+    );
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red),
     );
   }
 }
