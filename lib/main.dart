@@ -5,9 +5,16 @@ import 'dart:convert';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
+
 void main() async {
-  await dotenv.load();
-  runApp(const AskPrinceApp());
+  if (kIsWeb) {
+    // For web, environment variables should be set in Vercel or build environment
+    runApp(const AskPrinceApp());
+  } else {
+    await dotenv.load();
+    runApp(const AskPrinceApp());
+  }
 }
 
 // Removed print statement from TestApp build method
@@ -148,7 +155,7 @@ class _AskPrinceHomePageState extends State<AskPrinceHomePage> {
   // Added a function to handle streaming chat completions from Groq API
   Future<void> fetchGroqChatCompletionStream(
       String userMessage, void Function(String) onData) async {
-    final apiKey = dotenv.env['GROQ_API_KEY'];
+    final apiKey = kIsWeb ? const String.fromEnvironment('GROQ_API_KEY') : dotenv.env['GROQ_API_KEY'];
     if (apiKey == null || apiKey.isEmpty) {
       throw Exception('GROQ_API_KEY is not set in .env file');
     }
@@ -379,9 +386,10 @@ Always speak as Prince — humble, smart, and focused on results. Avoid jargon u
     });
 
     final url = Uri.parse('https://api.groq.com/openai/v1/chat/completions');
+    final apiKey = kIsWeb ? const String.fromEnvironment('GROQ_API_KEY') : dotenv.env['GROQ_API_KEY'];
     final headers = {
       'Content-Type': 'application/json',
-      'Authorization': 'Bearer ${dotenv.env['GROQ_API_KEY']}',
+      'Authorization': 'Bearer $apiKey',
     };
     final body = jsonEncode({
       'model': 'llama-3.3-70b-versatile',
